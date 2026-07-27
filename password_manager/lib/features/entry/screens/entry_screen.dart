@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import '../../../core/totp/totp_service.dart';
 import '../../../core/utils/helpers.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../vault/providers/vault_provider.dart';
+import '../widgets/totp_display.dart';
 
 class EntryScreen extends StatefulWidget {
   final String? entryId;
@@ -24,6 +26,8 @@ class _EntryScreenState extends State<EntryScreen> {
 
   bool _obscurePassword = true;
   bool _isLoading = false;
+  bool _totpEnabled = false;
+  String? _totpSecret; // stored once setup is complete
   bool get _isEditing => widget.entryId != null;
 
   @override
@@ -55,6 +59,10 @@ class _EntryScreenState extends State<EntryScreen> {
       _passwordController.text = entry.password;
       _urlController.text = entry.url;
       _notesController.text = entry.notes;
+      if (entry.hasTotp) {
+        _totpEnabled = true;
+        _totpSecret = entry.totpSecret;
+      }
     }
   }
 
@@ -86,6 +94,8 @@ class _EntryScreenState extends State<EntryScreen> {
           password: _passwordController.text,
           url: _urlController.text.trim(),
           notes: _notesController.text.trim(),
+          totpSecret: _totpSecret,
+          clearTotp: _totpEnabled && _totpSecret == null,
           masterPassword: auth.masterPassword!,
           salt: auth.salt!,
         );
@@ -96,6 +106,7 @@ class _EntryScreenState extends State<EntryScreen> {
           password: _passwordController.text,
           url: _urlController.text.trim(),
           notes: _notesController.text.trim(),
+          totpSecret: _totpSecret,
           masterPassword: auth.masterPassword!,
           salt: auth.salt!,
         );
@@ -157,8 +168,120 @@ class _EntryScreenState extends State<EntryScreen> {
     if (mounted) showSnackBar(context, '$label copied');
   }
 
+  /// Opens a dialog to setup TOTP secret
+  void _setupTotp() {
+    final controller = TextEditingController();
+    final isFromExisting = _isEditing && _totpEnabled && _totpSecret != null;
+
+    if (isFromExisting) {
+      // TOTP already setup — show remove option
+      _showTotpManagement();
+      return;
+    }
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Setup 2FA (TOTP)'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'Paste your secret key from the service (e.g. Google, GitHub), '
+              'or auto-generate one.',
+              style: TextStyle(fontSize: 14),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: controller,
+              decoration: const InputDecoration(
+                labelText: 'Secret Key (Base32)',
+                hintText: 'JBSWY3DPEHPK3PXP',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.vpn_key),
+              ),
+              maxLines: 2,
+              textInputAction: TextInputAction.done,
+            ),
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: () {
+                controller.text = TotpService.generateSecret();
+              },
+              icon: const Icon(Icons.auto_fix_high),
+              label: const Text('Generate Random Secret'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final secret = controller.text.trim();
+              if (secret.isEmpty) return;
+              if (!TotpService.isValidSecret(secret)) {
+                ScaffoldMessenger.of(ctx).showSnackBar(
+                  const SnackBar(
+                    content: Text('Invalid Base32 secret key'),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+                return;
+              }
+              setState(() {
+                _totpEnabled = true;
+                _totpSecret = secret;
+              });
+              Navigator.of(ctx).pop();
+            },
+            child: const Text('Save Secret'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Shows TOTP management options when TOTP is already setup
+  void _showTotpManagement() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('2FA (TOTP)'),
+        content: const Text(
+          'TOTP is currently enabled for this entry. '
+          'You can remove it if you no longer need it.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.tonalIcon(
+            onPressed: () {
+              setState(() {
+                _totpEnabled = false;
+                _totpSecret = null;
+              });
+              Navigator.of(ctx).pop();
+              showSnackBar(context, 'TOTP removed (save to confirm)');
+            },
+            icon: const Icon(Icons.remove_circle_outline),
+            label: const Text('Remove 2FA'),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red.shade100),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final hasTotp = _totpEnabled && _totpSecret != null;
+
     return Scaffold(
       appBar: AppBar(
         title: Text(_isEditing ? 'View Password' : 'New Password'),
@@ -283,6 +406,30 @@ class _EntryScreenState extends State<EntryScreen> {
                 maxLines: 3,
                 textInputAction: TextInputAction.newline,
               ),
+              const SizedBox(height: 16),
+
+              // ── TOTP / 2FA Section ──
+              if (hasTotp) ...[
+                TotpDisplay(secret: _totpSecret!),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    onPressed: _setupTotp,
+                    icon: const Icon(Icons.settings, size: 16),
+                    label: const Text('Manage 2FA'),
+                  ),
+                ),
+              ] else ...[
+                OutlinedButton.icon(
+                  onPressed: _setupTotp,
+                  icon: const Icon(Icons.lock_outline),
+                  label: const Text('Add Two-Factor Auth (2FA)'),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                  ),
+                ),
+              ],
               const SizedBox(height: 24),
 
               // Save button

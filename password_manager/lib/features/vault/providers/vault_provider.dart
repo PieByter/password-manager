@@ -82,6 +82,7 @@ class VaultProvider extends ChangeNotifier {
     required String password,
     String url = '',
     String notes = '',
+    String? totpSecret,
     required String masterPassword,
     required String salt,
   }) async {
@@ -92,6 +93,7 @@ class VaultProvider extends ChangeNotifier {
       password: password,
       url: url,
       notes: notes,
+      totpSecret: totpSecret,
     );
 
     _entries.insert(0, entry);
@@ -107,6 +109,8 @@ class VaultProvider extends ChangeNotifier {
     required String password,
     String url = '',
     String notes = '',
+    String? totpSecret,
+    bool clearTotp = false,
     required String masterPassword,
     required String salt,
   }) async {
@@ -119,6 +123,8 @@ class VaultProvider extends ChangeNotifier {
       password: password,
       url: url,
       notes: notes,
+      totpSecret: totpSecret,
+      clearTotp: clearTotp,
       updatedAt: DateTime.now(),
     );
 

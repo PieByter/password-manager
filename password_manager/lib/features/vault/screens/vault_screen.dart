@@ -168,13 +168,36 @@ class _VaultScreenState extends State<VaultScreen> {
           ),
         ),
         title: Text(entry.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-        subtitle: Text(
-          entry.username,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-          ),
+        subtitle: Row(
+          children: [
+            Flexible(
+              child: Text(
+                entry.username,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+            if (entry.hasTotp) ...[
+              const SizedBox(width: 8),
+              Icon(
+                Icons.lock_outline,
+                size: 12,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+              const SizedBox(width: 2),
+              Text(
+                '2FA',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+              ),
+            ],
+          ],
         ),
         trailing: PopupMenuButton<String>(
           onSelected: (value) {
