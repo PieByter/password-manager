@@ -36,7 +36,7 @@ dependencies:
   cupertino_icons: ^1.0.8
 
   # Secure storage for encrypting data at rest on device (Keychain/Keystore)
-  flutter_secure_storage: ^9.2.4
+  flutter_secure_storage: ^10.3.1
 
   # AES encryption for password data
   encrypt: ^5.0.3
@@ -45,7 +45,7 @@ dependencies:
   crypto: ^3.0.6
 
   # Biometric authentication (fingerprint / face ID)
-  local_auth: ^2.3.0
+  local_auth: ^3.0.2
 
   # State management
   provider: ^6.1.2

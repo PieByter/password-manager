@@ -96,10 +96,8 @@ class AuthProvider extends ChangeNotifier {
     try {
       final authenticated = await _localAuth.authenticate(
         localizedReason: 'Unlock your password vault',
-        options: const AuthenticationOptions(
-          stickyAuth: true,
-          biometricOnly: true,
-        ),
+        biometricOnly: true,
+        persistAcrossBackgrounding: true,
       );
 
       if (!authenticated) return false;
