@@ -20,6 +20,8 @@ class VaultProvider extends ChangeNotifier {
 
   List<PasswordEntry> _entries = [];
   bool _isLoading = false;
+  bool _hasLoaded = false;
+  String? _errorMessage;
   String _searchQuery = '';
 
   VaultProvider({
@@ -44,6 +46,8 @@ class VaultProvider extends ChangeNotifier {
 
   List<PasswordEntry> get allEntries => List.unmodifiable(_entries);
   bool get isLoading => _isLoading;
+  bool get hasLoaded => _hasLoaded;
+  String? get errorMessage => _errorMessage;
   String get searchQuery => _searchQuery;
 
   set searchQuery(String query) {
@@ -51,9 +55,15 @@ class VaultProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Load vault via the use case — storage & decryption are hidden
-  Future<void> loadVault(String masterPassword) async {
+  /// Load vault via the use case — storage & decryption are hidden.
+  ///
+  /// [hasLoaded] (not `entries.isEmpty`) is the source of truth so an empty
+  /// vault does not trigger an endless reload loop.
+  Future<void> loadVault(String masterPassword, {bool force = false}) async {
+    if (_isLoading || (_hasLoaded && !force)) return;
+
     _isLoading = true;
+    _errorMessage = null;
     notifyListeners();
 
     try {
@@ -61,10 +71,22 @@ class VaultProvider extends ChangeNotifier {
     } catch (e) {
       debugPrint('Error loading vault: $e');
       _entries = [];
+      _errorMessage = 'Could not open the vault. The data may be corrupted.';
     } finally {
       _isLoading = false;
+      _hasLoaded = true;
       notifyListeners();
     }
+  }
+
+  /// Drop all decrypted data when the session locks.
+  void reset() {
+    _entries = [];
+    _searchQuery = '';
+    _errorMessage = null;
+    _isLoading = false;
+    _hasLoaded = false;
+    notifyListeners();
   }
 
   /// Add a new password entry
@@ -88,6 +110,8 @@ class VaultProvider extends ChangeNotifier {
         totpSecret: totpSecret,
       ),
     );
+    _hasLoaded = true;
+    _errorMessage = null;
     notifyListeners();
   }
 
@@ -116,12 +140,16 @@ class VaultProvider extends ChangeNotifier {
         clearTotp: clearTotp,
       ),
     );
+    _hasLoaded = true;
+    _errorMessage = null;
     notifyListeners();
   }
 
   /// Delete an entry
   Future<void> deleteEntry(String id, String masterPassword) async {
     _entries = await _deleteEntry(id: id, masterPassword: masterPassword);
+    _hasLoaded = true;
+    _errorMessage = null;
     notifyListeners();
   }
 

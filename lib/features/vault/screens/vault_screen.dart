@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+
+import '../../../core/services/clipboard_service.dart';
 import '../../../core/utils/helpers.dart';
+import '../../../domain/entities/password_entry.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../entry/screens/entry_screen.dart';
+import '../../session/providers/session_provider.dart';
+import '../../settings/screens/settings_screen.dart';
 import '../providers/vault_provider.dart';
 
 class VaultScreen extends StatefulWidget {
@@ -22,8 +26,14 @@ class _VaultScreenState extends State<VaultScreen> {
     super.dispose();
   }
 
-  void _logout() {
-    context.read<AuthProvider>().logout();
+  void _lock() {
+    context.read<SessionProvider>().lock();
+  }
+
+  void _openSettings() {
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
   }
 
   void _addEntry() {
@@ -39,6 +49,26 @@ class _VaultScreenState extends State<VaultScreen> {
   }
 
   Future<void> _deleteEntry(String id) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Password'),
+        content: const Text('Are you sure you want to delete this password?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
     final auth = context.read<AuthProvider>();
     final vault = context.read<VaultProvider>();
     await vault.deleteEntry(id, auth.masterPassword!);
@@ -48,10 +78,16 @@ class _VaultScreenState extends State<VaultScreen> {
   }
 
   Future<void> _copyToClipboard(String text, String label) async {
-    await Clipboard.setData(ClipboardData(text: text));
-    if (mounted) {
-      showSnackBar(context, '$label copied');
-    }
+    if (text.isEmpty) return;
+    final clipboard = context.read<ClipboardService>();
+    await clipboard.copy(text);
+    if (!mounted) return;
+
+    final seconds = clipboard.clearSeconds;
+    showSnackBar(
+      context,
+      seconds > 0 ? '$label copied — clears in ${seconds}s' : '$label copied',
+    );
   }
 
   @override
@@ -64,9 +100,14 @@ class _VaultScreenState extends State<VaultScreen> {
         title: const Text('Password Manager'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.logout),
+            icon: const Icon(Icons.settings_outlined),
+            tooltip: 'Settings',
+            onPressed: _openSettings,
+          ),
+          IconButton(
+            icon: const Icon(Icons.lock_outline),
             tooltip: 'Lock vault',
-            onPressed: _logout,
+            onPressed: _lock,
           ),
         ],
       ),
@@ -101,8 +142,10 @@ class _VaultScreenState extends State<VaultScreen> {
           Expanded(
             child: vault.isLoading
                 ? const Center(child: CircularProgressIndicator())
+                : vault.errorMessage != null
+                ? _buildErrorState(context, vault)
                 : entries.isEmpty
-                ? _buildEmptyState(context)
+                ? _buildEmptyState(context, vault)
                 : ListView.builder(
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     itemCount: entries.length,
@@ -122,24 +165,70 @@ class _VaultScreenState extends State<VaultScreen> {
     );
   }
 
-  Widget _buildEmptyState(BuildContext context) {
+  Widget _buildErrorState(BuildContext context, VaultProvider vault) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.error_outline,
+              size: 64,
+              color: Theme.of(context).colorScheme.error,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Could not open the vault',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              vault.errorMessage ?? '',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: () {
+                final password = context.read<AuthProvider>().masterPassword;
+                if (password != null) {
+                  vault.loadVault(password, force: true);
+                }
+              },
+              icon: const Icon(Icons.refresh),
+              label: const Text('Retry'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyState(BuildContext context, VaultProvider vault) {
+    final isSearching = vault.searchQuery.isNotEmpty;
+
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Icon(
-            Icons.lock_outline,
+            isSearching ? Icons.search_off : Icons.lock_outline,
             size: 64,
             color: Theme.of(context).colorScheme.onSurfaceVariant,
           ),
           const SizedBox(height: 16),
           Text(
-            'No passwords yet',
+            isSearching ? 'No results' : 'No passwords yet',
             style: Theme.of(context).textTheme.titleLarge,
           ),
           const SizedBox(height: 8),
           Text(
-            'Tap + to add your first password',
+            isSearching
+                ? 'Try a different search term'
+                : 'Tap + to add your first password',
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
@@ -151,7 +240,7 @@ class _VaultScreenState extends State<VaultScreen> {
 
   Widget _buildEntryCard(
     BuildContext context,
-    dynamic entry,
+    PasswordEntry entry,
     VaultProvider vault,
   ) {
     return Card(

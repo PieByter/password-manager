@@ -17,6 +17,13 @@ abstract class AuthRepository {
   /// Returns `true` if [password] matches the stored hash.
   Future<bool> verifyMasterPassword(String password);
 
+  /// Replaces the stored verifier with one for [newPassword].
+  ///
+  /// The vault must already be re-encrypted with the new password before this
+  /// is called. The salt is intentionally kept stable; the key changes because
+  /// the password changes.
+  Future<void> changeMasterPassword(String newPassword);
+
   /// Whether the device supports biometrics (fingerprint / face ID).
   Future<bool> isBiometricAvailable();
 
@@ -24,6 +31,18 @@ abstract class AuthRepository {
 
   Future<void> setBiometricEnabled(bool enabled);
 
+  /// Persists the master password used for biometric unlock.
+  Future<void> saveBiometricPassword(String password);
+
+  /// Reads the stored master password. Callers must authenticate first.
+  Future<String?> readBiometricPassword();
+
+  /// Removes the stored biometric credential.
+  Future<void> deleteBiometricPassword();
+
   /// Shows the system biometric prompt. Returns `true` on success.
   Future<bool> authenticateWithBiometrics();
+
+  /// Clears derived cryptographic keys held in memory for the session.
+  void clearSessionCache();
 }

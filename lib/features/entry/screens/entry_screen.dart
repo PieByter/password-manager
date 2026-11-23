@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+
+import '../../../core/security/password_generator.dart';
+import '../../../core/security/password_strength.dart';
+import '../../../core/services/clipboard_service.dart';
 import '../../../core/totp/totp_service.dart';
 import '../../../core/utils/helpers.dart';
 import '../../auth/providers/auth_provider.dart';
 import '../../vault/providers/vault_provider.dart';
+import '../widgets/password_generator_sheet.dart';
 import '../widgets/totp_display.dart';
 
 class EntryScreen extends StatefulWidget {
@@ -36,7 +40,7 @@ class _EntryScreenState extends State<EntryScreen> {
     if (_isEditing) {
       _loadEntry();
     } else {
-      _generatePassword();
+      _passwordController.text = PasswordGenerator.generate();
     }
   }
 
@@ -66,15 +70,10 @@ class _EntryScreenState extends State<EntryScreen> {
     }
   }
 
-  void _generatePassword() {
-    final random = DateTime.now().microsecondsSinceEpoch;
-    final chars =
-        'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#\$%^&*()';
-    final password = List.generate(20, (i) {
-      final index = (random * (i + 1)) % chars.length;
-      return chars[index];
-    }).join();
-    _passwordController.text = password;
+  Future<void> _openGenerator() async {
+    final password = await PasswordGeneratorSheet.show(context);
+    if (password == null || !mounted) return;
+    setState(() => _passwordController.text = password);
   }
 
   Future<void> _save() async {
@@ -157,23 +156,30 @@ class _EntryScreenState extends State<EntryScreen> {
     }
   }
 
-  void _copyField(String text, String label) async {
-    await Clipboard.setData(ClipboardData(text: text));
-    if (mounted) showSnackBar(context, '$label copied');
+  Future<void> _copyField(String text, String label) async {
+    if (text.isEmpty) return;
+    final clipboard = context.read<ClipboardService>();
+    await clipboard.copy(text);
+    if (!mounted) return;
+
+    final seconds = clipboard.clearSeconds;
+    showSnackBar(
+      context,
+      seconds > 0 ? '$label copied — clears in ${seconds}s' : '$label copied',
+    );
   }
 
-  /// Opens a dialog to setup TOTP secret
-  void _setupTotp() {
-    final controller = TextEditingController();
+  /// Opens a dialog to setup TOTP secret.
+  Future<void> _setupTotp() async {
     final isFromExisting = _isEditing && _totpEnabled && _totpSecret != null;
 
     if (isFromExisting) {
-      // TOTP already setup — show remove option
       _showTotpManagement();
       return;
     }
 
-    showDialog(
+    final controller = TextEditingController();
+    await showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Setup 2FA (TOTP)'),
@@ -237,11 +243,12 @@ class _EntryScreenState extends State<EntryScreen> {
         ],
       ),
     );
+    controller.dispose();
   }
 
-  /// Shows TOTP management options when TOTP is already setup
+  /// Shows TOTP management options when TOTP is already setup.
   void _showTotpManagement() {
-    showDialog(
+    showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('2FA (TOTP)'),
@@ -336,6 +343,8 @@ class _EntryScreenState extends State<EntryScreen> {
               TextFormField(
                 controller: _passwordController,
                 obscureText: _obscurePassword,
+                autocorrect: false,
+                enableSuggestions: false,
                 decoration: InputDecoration(
                   labelText: 'Password',
                   border: const OutlineInputBorder(),
@@ -343,18 +352,20 @@ class _EntryScreenState extends State<EntryScreen> {
                   suffixIcon: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      if (!_isEditing)
-                        IconButton(
-                          icon: const Icon(Icons.refresh),
-                          tooltip: 'Generate password',
-                          onPressed: _generatePassword,
-                        ),
+                      IconButton(
+                        icon: const Icon(Icons.auto_awesome),
+                        tooltip: 'Generate password',
+                        onPressed: _openGenerator,
+                      ),
                       IconButton(
                         icon: Icon(
                           _obscurePassword
                               ? Icons.visibility_off
                               : Icons.visibility,
                         ),
+                        tooltip: _obscurePassword
+                            ? 'Show password'
+                            : 'Hide password',
                         onPressed: () => setState(
                           () => _obscurePassword = !_obscurePassword,
                         ),
@@ -371,6 +382,11 @@ class _EntryScreenState extends State<EntryScreen> {
                 validator: (v) =>
                     v == null || v.isEmpty ? 'Password is required' : null,
                 textInputAction: TextInputAction.next,
+              ),
+              ValueListenableBuilder<TextEditingValue>(
+                valueListenable: _passwordController,
+                builder: (context, value, _) =>
+                    _PasswordStrengthIndicator(password: value.text),
               ),
               const SizedBox(height: 16),
 
@@ -444,6 +460,54 @@ class _EntryScreenState extends State<EntryScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _PasswordStrengthIndicator extends StatelessWidget {
+  final String password;
+
+  const _PasswordStrengthIndicator({required this.password});
+
+  @override
+  Widget build(BuildContext context) {
+    if (password.isEmpty) return const SizedBox.shrink();
+
+    final strength = PasswordStrength.estimate(password);
+    final color = switch (strength.score) {
+      0 => Colors.red,
+      1 => Colors.orange,
+      2 => Colors.amber,
+      3 => Colors.lightGreen,
+      _ => Colors.green,
+    };
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: strength.fraction,
+                minHeight: 5,
+                backgroundColor: Theme.of(
+                  context,
+                ).colorScheme.surfaceContainerHighest,
+                valueColor: AlwaysStoppedAnimation(color),
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            strength.label,
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: color),
+          ),
+        ],
       ),
     );
   }

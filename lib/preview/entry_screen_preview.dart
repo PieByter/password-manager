@@ -17,11 +17,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/widget_previews.dart';
 import 'package:provider/provider.dart';
 
+import '../core/services/clipboard_service.dart';
 import '../domain/entities/password_entry.dart';
 import '../domain/repositories/auth_repository.dart';
 import '../domain/repositories/vault_repository.dart';
+import '../domain/usecases/auth/change_master_password.dart';
 import '../domain/usecases/auth/create_master_password.dart';
 import '../domain/usecases/auth/initialize_auth.dart';
+import '../domain/usecases/auth/lock_session.dart';
 import '../domain/usecases/auth/login_with_biometrics.dart';
 import '../domain/usecases/auth/toggle_biometric.dart';
 import '../domain/usecases/auth/verify_master_password.dart';
@@ -42,6 +45,7 @@ Widget entryScreenPreview() => const EntryScreenPreview();
 class FakeAuthRepository implements AuthRepository {
   final Map<String, String> _data = {};
   bool _biometricEnabled = false;
+  String? _biometricPassword;
 
   @override
   Future<bool> hasMasterPassword() async => _data.containsKey('hash');
@@ -58,6 +62,11 @@ class FakeAuthRepository implements AuthRepository {
   }
 
   @override
+  Future<void> changeMasterPassword(String newPassword) async {
+    _data['hash'] = newPassword;
+  }
+
+  @override
   Future<bool> isBiometricAvailable() async => false;
 
   @override
@@ -69,7 +78,23 @@ class FakeAuthRepository implements AuthRepository {
   }
 
   @override
+  Future<void> saveBiometricPassword(String password) async {
+    _biometricPassword = password;
+  }
+
+  @override
+  Future<String?> readBiometricPassword() async => _biometricPassword;
+
+  @override
+  Future<void> deleteBiometricPassword() async {
+    _biometricPassword = null;
+  }
+
+  @override
   Future<bool> authenticateWithBiometrics() async => false;
+
+  @override
+  void clearSessionCache() {}
 }
 
 /// Fake vault repository — list disimpan di memory.
@@ -111,7 +136,15 @@ class EntryScreenPreview extends StatelessWidget {
             verifyMasterPassword: VerifyMasterPassword(authRepository),
             loginWithBiometrics: LoginWithBiometrics(authRepository),
             toggleBiometric: ToggleBiometric(authRepository),
+            changeMasterPassword: ChangeMasterPassword(
+              authRepository: authRepository,
+              vaultRepository: vaultRepository,
+            ),
+            lockSession: LockSession(authRepository),
           ),
+        ),
+        Provider<ClipboardService>(
+          create: (_) => ClipboardService(clearSeconds: () => 30),
         ),
         ChangeNotifierProvider(
           create: (_) => VaultProvider(

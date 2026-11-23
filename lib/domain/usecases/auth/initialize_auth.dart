@@ -25,8 +25,22 @@ class InitializeAuth {
 
   Future<AuthInitInfo> call() async {
     final hasMasterPassword = await repository.hasMasterPassword();
-    final biometricAvailable = await repository.isBiometricAvailable();
-    final biometricEnabled = await repository.isBiometricEnabled();
+
+    // Biometrics are optional: a missing/unsupported plugin must never block
+    // first-time setup or password login.
+    var biometricAvailable = false;
+    var biometricEnabled = false;
+    try {
+      biometricAvailable = await repository.isBiometricAvailable();
+    } catch (_) {
+      biometricAvailable = false;
+    }
+    try {
+      biometricEnabled = await repository.isBiometricEnabled();
+    } catch (_) {
+      biometricEnabled = false;
+    }
+
     return AuthInitInfo(
       hasMasterPassword: hasMasterPassword,
       biometricAvailable: biometricAvailable,

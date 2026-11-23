@@ -2,6 +2,8 @@
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+
+import '../../../core/security/password_strength.dart';
 import '../providers/auth_provider.dart';
 
 class AuthScreen extends StatefulWidget {
@@ -47,9 +49,10 @@ class _AuthScreenState extends State<AuthScreen> {
       success = await auth.login(_passwordController.text);
     }
 
+    if (!mounted) return;
     setState(() => _isLoading = false);
 
-    if (!success && mounted) {
+    if (!success) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -64,52 +67,24 @@ class _AuthScreenState extends State<AuthScreen> {
   Future<void> _authenticateWithBiometric() async {
     final auth = context.read<AuthProvider>();
     final success = await auth.loginWithBiometrics();
-    if (success && mounted) {
-      // Show a dialog to enter master password since we need it for decryption
-      _showMasterPasswordDialog();
+    if (!success && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Biometric authentication failed'),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
 
-  void _showMasterPasswordDialog() {
-    final controller = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Enter Master Password'),
-        content: TextField(
-          controller: controller,
-          obscureText: true,
-          decoration: const InputDecoration(
-            labelText: 'Master Password',
-            border: OutlineInputBorder(),
-          ),
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () async {
-              final auth = context.read<AuthProvider>();
-              final messenger = ScaffoldMessenger.of(ctx);
-              final success = await auth.login(controller.text);
-              if (mounted) Navigator.of(ctx).pop();
-              if (!success && mounted) {
-                messenger.showSnackBar(
-                  const SnackBar(
-                    content: Text('Invalid password'),
-                    backgroundColor: Colors.red,
-                  ),
-                );
-              }
-            },
-            child: const Text('Unlock'),
-          ),
-        ],
-      ),
-    );
+  Color _strengthColor(int score) {
+    return switch (score) {
+      0 => Colors.red,
+      1 => Colors.orange,
+      2 => Colors.amber,
+      3 => Colors.lightGreen,
+      _ => Colors.green,
+    };
   }
 
   @override
@@ -142,7 +117,8 @@ class _AuthScreenState extends State<AuthScreen> {
                   const SizedBox(height: 8),
                   Text(
                     isSetup
-                        ? 'This will be used to encrypt all your passwords'
+                        ? 'This password encrypts your entire vault. '
+                              'It cannot be recovered if you forget it.'
                         : 'Enter your master password to unlock',
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
@@ -153,6 +129,8 @@ class _AuthScreenState extends State<AuthScreen> {
                   TextFormField(
                     controller: _passwordController,
                     obscureText: _obscurePassword,
+                    autocorrect: false,
+                    enableSuggestions: false,
                     decoration: InputDecoration(
                       labelText: 'Master Password',
                       border: const OutlineInputBorder(),
@@ -169,18 +147,56 @@ class _AuthScreenState extends State<AuthScreen> {
                       ),
                     ),
                     validator: (v) {
-                      if (v == null || v.isEmpty) return 'Password is required';
-                      if (isSetup && v.length < 6) {
-                        return 'Password must be at least 6 characters';
+                      if (v == null || v.isEmpty) {
+                        return 'Password is required';
+                      }
+                      if (isSetup && v.length < 12) {
+                        return 'Use at least 12 characters';
                       }
                       return null;
                     },
                   ),
+                  if (isSetup)
+                    ValueListenableBuilder<TextEditingValue>(
+                      valueListenable: _passwordController,
+                      builder: (context, value, _) {
+                        if (value.text.isEmpty) return const SizedBox.shrink();
+                        final strength = PasswordStrength.estimate(value.text);
+                        return Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(4),
+                                child: LinearProgressIndicator(
+                                  value: strength.fraction,
+                                  minHeight: 6,
+                                  backgroundColor: Theme.of(
+                                    context,
+                                  ).colorScheme.surfaceContainerHighest,
+                                  valueColor: AlwaysStoppedAnimation(
+                                    _strengthColor(strength.score),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                'Strength: ${strength.label}',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
                   if (isSetup) ...[
                     const SizedBox(height: 16),
                     TextFormField(
                       controller: _confirmController,
                       obscureText: _obscureConfirm,
+                      autocorrect: false,
+                      enableSuggestions: false,
                       decoration: InputDecoration(
                         labelText: 'Confirm Password',
                         border: const OutlineInputBorder(),
@@ -231,7 +247,9 @@ class _AuthScreenState extends State<AuthScreen> {
                           : Text(isSetup ? 'Create Vault' : 'Unlock'),
                     ),
                   ),
-                  if (!isSetup && auth.isBiometricAvailable) ...[
+                  if (!isSetup &&
+                      auth.biometricEnabled &&
+                      auth.isBiometricAvailable) ...[
                     const SizedBox(height: 16),
                     OutlinedButton.icon(
                       onPressed: _authenticateWithBiometric,

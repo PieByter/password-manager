@@ -1,6 +1,9 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../../../core/services/clipboard_service.dart';
 import '../../../core/totp/totp_service.dart';
+import '../../../core/utils/helpers.dart';
 
 /// A widget that displays a live TOTP code with a countdown timer.
 /// Auto-updates every second via a periodic timer.
@@ -52,6 +55,19 @@ class _TotpDisplayState extends State<TotpDisplay> {
       _code = TotpService.generateCode(widget.secret);
       _remaining = TotpService.getRemainingSeconds();
     });
+  }
+
+  Future<void> _copyCode() async {
+    final clipboard = context.read<ClipboardService>();
+    await clipboard.copy(_code);
+    if (!mounted) return;
+    final seconds = clipboard.clearSeconds;
+    showSnackBar(
+      context,
+      seconds > 0
+          ? '2FA code copied — clears in ${seconds}s'
+          : '2FA code copied',
+    );
   }
 
   Color _timerColor() {
@@ -112,15 +128,29 @@ class _TotpDisplayState extends State<TotpDisplay> {
             ],
           ),
           const SizedBox(height: 12),
-          Text(
-            _code,
-            style: TextStyle(
-              fontFamily: 'monospace',
-              fontSize: widget.codeFontSize,
-              fontWeight: FontWeight.bold,
-              letterSpacing: 6,
-              color: theme.colorScheme.onSurface,
-            ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                _code,
+                style: TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: widget.codeFontSize,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 6,
+                  color: theme.colorScheme.onSurface,
+                ),
+              ),
+              IconButton(
+                tooltip: 'Copy code',
+                onPressed: _copyCode,
+                icon: Icon(
+                  Icons.copy,
+                  size: 20,
+                  color: theme.colorScheme.primary,
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 8),
           Row(

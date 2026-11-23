@@ -42,14 +42,30 @@ class AuthRepositoryImpl implements AuthRepository {
     final storedHash = await _storage.getMasterPasswordHash();
     if (salt == null || storedHash == null) return false;
 
-    final hash = _encryption.hashMasterPassword(password, salt);
-    return hash == storedHash;
+    return _encryption.verifyMasterPassword(password, salt, storedHash);
+  }
+
+  @override
+  Future<void> changeMasterPassword(String newPassword) async {
+    final salt = await _storage.getMasterPasswordSalt();
+    if (salt == null) {
+      throw StateError('Master password salt not found');
+    }
+
+    final hash = _encryption.hashMasterPassword(newPassword, salt);
+    await _storage.saveMasterPasswordHash(hash, salt);
+    _encryption.clearKeyCache();
   }
 
   @override
   Future<bool> isBiometricAvailable() async {
-    return await _localAuth.canCheckBiometrics ||
-        await _localAuth.isDeviceSupported();
+    try {
+      return await _localAuth.canCheckBiometrics ||
+          await _localAuth.isDeviceSupported();
+    } catch (e) {
+      // Unsupported platform or missing plugin: biometrics are optional.
+      return false;
+    }
   }
 
   @override
@@ -60,6 +76,21 @@ class AuthRepositoryImpl implements AuthRepository {
   @override
   Future<void> setBiometricEnabled(bool enabled) {
     return _storage.setBiometricEnabled(enabled);
+  }
+
+  @override
+  Future<void> saveBiometricPassword(String password) {
+    return _storage.saveBiometricPassword(password);
+  }
+
+  @override
+  Future<String?> readBiometricPassword() {
+    return _storage.readBiometricPassword();
+  }
+
+  @override
+  Future<void> deleteBiometricPassword() {
+    return _storage.deleteBiometricPassword();
   }
 
   @override
@@ -75,5 +106,10 @@ class AuthRepositoryImpl implements AuthRepository {
     } catch (e) {
       return false;
     }
+  }
+
+  @override
+  void clearSessionCache() {
+    _encryption.clearKeyCache();
   }
 }

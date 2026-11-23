@@ -1,104 +1,217 @@
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
+
 import 'package:crypto/crypto.dart';
 import 'package:encrypt/encrypt.dart' as encrypt_lib;
 
+/// Key material derived once per (password, salt) pair and cached for the
+/// lifetime of the unlocked session.
+///
+/// The vault format is `v2:<ivBase64>:<cipherBase64>:<macBase64>` using
+/// AES-256-CBC + HMAC-SHA256 (encrypt-then-MAC). The salt itself is stored
+/// in secure storage, not inside the blob, because it is shared with the
+/// master-password verifier.
+class _DerivedKeys {
+  final Uint8List encryptionKey;
+  final Uint8List macKey;
+
+  const _DerivedKeys({required this.encryptionKey, required this.macKey});
+}
+
 /// Cryptographic helper used by the data layer to protect data at rest.
-/// Lives in the DATA layer because it is an implementation detail
-/// (AES-256-CBC + PBKDF2) of how the vault is persisted.
+///
+/// Security properties:
+/// - PBKDF2-HMAC-SHA256 with 100.000 iterations.
+/// - Encryption key and authentication key are derived separately
+///   (`enc|salt` vs `auth|salt`) so a leaked verifier is not a vault key.
+/// - AES-256-CBC with a fresh random IV for every encryption.
+/// - HMAC-SHA256 over the format version, IV and ciphertext, verified with a
+///   constant-time comparison before decryption.
 class EncryptionService {
-  /// Implements PBKDF2-HMAC-SHA256 key derivation
-  /// Returns a 32-byte (256-bit) derived key.
+  static const int _iterations = 100000;
+  static const int _keyLength = 32;
+  static const int _macLength = 32;
+  static const int _saltLength = 32;
+  static const String _formatVersion = 'v2';
+
+  final Map<String, _DerivedKeys> _keyCache = {};
+
+  /// Implements PBKDF2-HMAC-SHA256 (RFC 8018).
   Uint8List _pbkdf2(
     String password,
-    String salt,
+    List<int> salt,
     int iterations,
     int keyLength,
   ) {
     final passwordBytes = utf8.encode(password);
-    final saltBytes = utf8.encode(salt);
-    final hLen = sha256.convert([]).bytes.length; // 32 bytes
-    final l = (keyLength + hLen - 1) ~/ hLen;
-    final dk = Uint8List(keyLength);
-    var pos = 0;
+    final hLen = sha256.convert(const []).bytes.length; // 32 bytes
+    final blockCount = (keyLength + hLen - 1) ~/ hLen;
+    final derived = Uint8List(keyLength);
+    var offset = 0;
 
-    for (var i = 1; i <= l; i++) {
-      // Create block: salt || INT_32_BE(i)
-      final block = Uint8List(saltBytes.length + 4);
-      block.setRange(0, saltBytes.length, saltBytes);
-      block[saltBytes.length] = (i >> 24) & 0xff;
-      block[saltBytes.length + 1] = (i >> 16) & 0xff;
-      block[saltBytes.length + 2] = (i >> 8) & 0xff;
-      block[saltBytes.length + 3] = i & 0xff;
+    for (var blockIndex = 1; blockIndex <= blockCount; blockIndex++) {
+      final block = Uint8List(salt.length + 4)..setRange(0, salt.length, salt);
+      block[salt.length] = (blockIndex >> 24) & 0xff;
+      block[salt.length + 1] = (blockIndex >> 16) & 0xff;
+      block[salt.length + 2] = (blockIndex >> 8) & 0xff;
+      block[salt.length + 3] = blockIndex & 0xff;
 
-      // U1 = HMAC-SHA256(password, salt || INT_32_BE(i))
       var u = Hmac(sha256, passwordBytes).convert(block).bytes;
+      final t = Uint8List.fromList(u);
 
-      // T = U1
-      var t = Uint8List.fromList(u);
-
-      // U2..Uc
-      for (var j = 2; j <= iterations; j++) {
+      for (var i = 2; i <= iterations; i++) {
         u = Hmac(sha256, passwordBytes).convert(u).bytes;
-        for (var k = 0; k < hLen; k++) {
-          t[k] ^= u[k];
+        for (var j = 0; j < hLen; j++) {
+          t[j] ^= u[j];
         }
       }
 
-      // Append T to derived key
-      final copyLen = min(hLen, dk.length - pos);
-      dk.setRange(pos, pos + copyLen, t.sublist(0, copyLen));
-      pos += copyLen;
+      final copyLength = min(hLen, keyLength - offset);
+      derived.setRange(offset, offset + copyLength, t.sublist(0, copyLength));
+      offset += copyLength;
     }
 
-    return dk;
+    return derived;
   }
 
-  // Derives a 32-byte AES key from the master password using PBKDF2
-  encrypt_lib.Key _deriveKey(String masterPassword, String salt) {
-    final keyBytes = _pbkdf2(masterPassword, salt, 100000, 32);
-    return encrypt_lib.Key.fromUtf8(base64.encode(keyBytes));
+  /// Cache identity deliberately includes a hash of the password, so a key
+  /// derived for an old password can never be reused after a password change
+  /// even though the salt stays the same.
+  String _cacheKey(String password, String salt) {
+    return sha256.convert(utf8.encode('$salt\u0000$password')).toString();
   }
 
-  /// Generates a random salt string
+  _DerivedKeys _deriveKeys(String masterPassword, String salt) {
+    final cacheKey = _cacheKey(masterPassword, salt);
+    final cached = _keyCache[cacheKey];
+    if (cached != null) return cached;
+
+    final material = _pbkdf2(
+      masterPassword,
+      utf8.encode('enc|$salt'),
+      _iterations,
+      _keyLength + _macLength,
+    );
+
+    final keys = _DerivedKeys(
+      encryptionKey: Uint8List.fromList(material.sublist(0, _keyLength)),
+      macKey: Uint8List.fromList(material.sublist(_keyLength)),
+    );
+    _keyCache[cacheKey] = keys;
+    return keys;
+  }
+
+  /// Generates a random salt string (32 secure-random bytes, Base64 encoded).
   String generateSalt() {
     final random = Random.secure();
-    final bytes = List<int>.generate(32, (_) => random.nextInt(256));
+    final bytes = List<int>.generate(_saltLength, (_) => random.nextInt(256));
     return base64.encode(bytes);
   }
 
-  /// Hashes the master password with the salt for storage/verification
+  /// Derives the verifier stored in secure storage.
+  ///
+  /// Uses a separate domain (`auth|salt`) from the encryption key so the
+  /// stored verifier cannot be used to decrypt the vault.
   String hashMasterPassword(String masterPassword, String salt) {
-    final hash = _pbkdf2(masterPassword, salt, 100000, 32);
+    final hash = _pbkdf2(
+      masterPassword,
+      utf8.encode('auth|$salt'),
+      _iterations,
+      _keyLength,
+    );
     return base64.encode(hash);
   }
 
-  /// Encrypts plaintext using AES-256-CBC with a random IV
-  String encrypt(String plaintext, String masterPassword, String salt) {
-    final key = _deriveKey(masterPassword, salt);
-    final iv = encrypt_lib.IV.fromSecureRandom(16);
-    final encrypter = encrypt_lib.Encrypter(
-      encrypt_lib.AES(key, mode: encrypt_lib.AESMode.cbc),
+  /// Constant-time verification of the stored master-password verifier.
+  bool verifyMasterPassword(String password, String salt, String expectedHash) {
+    late final Uint8List expected;
+    try {
+      expected = base64.decode(expectedHash);
+    } on FormatException {
+      return false;
+    }
+
+    final actual = _pbkdf2(
+      password,
+      utf8.encode('auth|$salt'),
+      _iterations,
+      _keyLength,
     );
-    final encrypted = encrypter.encrypt(plaintext, iv: iv);
-    final ivBase64 = iv.base64;
-    final cipherBase64 = encrypted.base64;
-    return '$ivBase64:$cipherBase64';
+    return _constantTimeEquals(actual, expected);
   }
 
-  /// Decrypts ciphertext that was encrypted with [encrypt]
-  String decrypt(String ciphertext, String masterPassword, String salt) {
-    final key = _deriveKey(masterPassword, salt);
-    final parts = ciphertext.split(':');
-    if (parts.length != 2) {
-      throw ArgumentError('Invalid ciphertext format');
-    }
-    final iv = encrypt_lib.IV.fromBase64(parts[0]);
-    final encrypted = encrypt_lib.Encrypted.fromBase64(parts[1]);
+  /// Encrypts plaintext using AES-256-CBC + HMAC-SHA256 (encrypt-then-MAC).
+  String encrypt(String plaintext, String masterPassword, String salt) {
+    final keys = _deriveKeys(masterPassword, salt);
+    final iv = encrypt_lib.IV.fromSecureRandom(16);
     final encrypter = encrypt_lib.Encrypter(
-      encrypt_lib.AES(key, mode: encrypt_lib.AESMode.cbc),
+      encrypt_lib.AES(
+        encrypt_lib.Key(keys.encryptionKey),
+        mode: encrypt_lib.AESMode.cbc,
+      ),
+    );
+    final encrypted = encrypter.encrypt(plaintext, iv: iv);
+    final mac = _computeMac(keys.macKey, iv.bytes, encrypted.bytes);
+    return '$_formatVersion:${iv.base64}:${encrypted.base64}:${base64.encode(mac)}';
+  }
+
+  /// Decrypts a `v2` ciphertext after verifying its HMAC.
+  ///
+  /// Throws [FormatException] when the payload is malformed, tampered with, or
+  /// the master password is wrong. Details are intentionally not exposed.
+  String decrypt(String ciphertext, String masterPassword, String salt) {
+    final parts = ciphertext.split(':');
+    if (parts.length != 4 || parts[0] != _formatVersion) {
+      throw const FormatException('Unsupported vault format');
+    }
+
+    late final encrypt_lib.IV iv;
+    late final encrypt_lib.Encrypted encrypted;
+    late final Uint8List mac;
+    try {
+      iv = encrypt_lib.IV.fromBase64(parts[1]);
+      encrypted = encrypt_lib.Encrypted.fromBase64(parts[2]);
+      mac = base64.decode(parts[3]);
+    } on FormatException {
+      throw const FormatException('Invalid vault payload');
+    }
+
+    final keys = _deriveKeys(masterPassword, salt);
+    final expectedMac = _computeMac(keys.macKey, iv.bytes, encrypted.bytes);
+    if (!_constantTimeEquals(mac, expectedMac)) {
+      throw const FormatException('Vault integrity check failed');
+    }
+
+    final encrypter = encrypt_lib.Encrypter(
+      encrypt_lib.AES(
+        encrypt_lib.Key(keys.encryptionKey),
+        mode: encrypt_lib.AESMode.cbc,
+      ),
     );
     return encrypter.decrypt(encrypted, iv: iv);
+  }
+
+  Uint8List _computeMac(Uint8List macKey, List<int> iv, List<int> ciphertext) {
+    final payload = Uint8List.fromList([
+      ...utf8.encode(_formatVersion),
+      ...iv,
+      ...ciphertext,
+    ]);
+    return Uint8List.fromList(Hmac(sha256, macKey).convert(payload).bytes);
+  }
+
+  bool _constantTimeEquals(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    var difference = 0;
+    for (var i = 0; i < a.length; i++) {
+      difference |= a[i] ^ b[i];
+    }
+    return difference == 0;
+  }
+
+  /// Removes all derived key material from memory. Call when the vault locks.
+  void clearKeyCache() {
+    _keyCache.clear();
   }
 }

@@ -64,9 +64,11 @@ class TotpService {
   /// Generates a TOTP code for the given secret key
   /// Uses SHA-1 as digest (standard RFC 6238)
   /// Returns a 6-digit code as string, e.g. "123456"
-  static String generateCode(String secret) {
+  ///
+  /// [at] is injectable for deterministic tests.
+  static String generateCode(String secret, {DateTime? at}) {
     final key = _base32Decode(secret);
-    final time = (DateTime.now().millisecondsSinceEpoch / 1000).floor();
+    final time = ((at ?? DateTime.now()).millisecondsSinceEpoch / 1000).floor();
     final counter = time ~/ 30;
 
     // Create 8-byte big-endian counter
@@ -94,8 +96,9 @@ class TotpService {
   }
 
   /// Returns seconds remaining in the current 30-second window
-  static int getRemainingSeconds() {
-    return 30 - (DateTime.now().millisecondsSinceEpoch ~/ 1000) % 30;
+  static int getRemainingSeconds({DateTime? at}) {
+    final milliseconds = (at ?? DateTime.now()).millisecondsSinceEpoch;
+    return 30 - (milliseconds ~/ 1000) % 30;
   }
 
   /// Validates whether a secret key is valid Base32 format

@@ -15,6 +15,7 @@ class SecureStorageService {
   static const _keyHash = 'master_password_hash';
   static const _vaultData = 'vault_encrypted_data';
   static const _biometricEnabled = 'biometric_enabled';
+  static const _biometricPassword = 'biometric_master_password';
 
   // --- Master Password ---
 
@@ -46,7 +47,7 @@ class SecureStorageService {
     return await _storage.read(key: _vaultData);
   }
 
-  // --- Biometric setting ---
+  // --- Biometric setting + wrapped credential ---
 
   Future<void> setBiometricEnabled(bool enabled) async {
     await _storage.write(key: _biometricEnabled, value: enabled.toString());
@@ -55,6 +56,22 @@ class SecureStorageService {
   Future<bool> isBiometricEnabled() async {
     final value = await _storage.read(key: _biometricEnabled);
     return value == 'true';
+  }
+
+  /// Stores the master password for biometric unlock.
+  ///
+  /// The value is only read after a successful `local_auth` prompt. See the
+  /// PRD (FR-03) for the platform security limitations of this approach.
+  Future<void> saveBiometricPassword(String password) async {
+    await _storage.write(key: _biometricPassword, value: password);
+  }
+
+  Future<String?> readBiometricPassword() async {
+    return _storage.read(key: _biometricPassword);
+  }
+
+  Future<void> deleteBiometricPassword() async {
+    await _storage.delete(key: _biometricPassword);
   }
 
   // --- Clear all data ---
